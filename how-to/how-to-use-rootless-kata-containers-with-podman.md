@@ -7,6 +7,7 @@
         * [Disable SELinux](#disable-selinux)
         * [Add user to KVM group](#add-user-to-kvm-group)
         * [Reboot](#reboot)
+        * [Setup Kata configuration files](#setup-kata-configuration-files)
         * [Disable `vhost-net`](#disable-vhost-net)
         * [Modify the Kata image permissions](#modify-the-kata-image-permissions)
         * [Set up Podman rootless configuration](#set-up-podman-rootless-configuration)
@@ -28,31 +29,33 @@ user-space networking.
   [supported distributions](https://github.com/kata-containers/documentation/blob/master/install/README.md#supported-distributions)
   for an updated list.
 
-  - If using CentOS 7, `newuidmap` and `newgidmap` do not exist. Install them with:
+  - If using an older distribution such as CentOS 7, `newuidmap` and `newgidmap` will not exist. Install them with:
 
     ```bash
-    $ (git clone https://github.com/shadow-maint/shadow; cd shadow; ./autogen.sh --prefix=/usr --enable-man; make && sudo make -C src install)
-    $ sudo bash -c 'echo 10000 > /proc/sys/user/max_user_namespaces'
-    $ sudo bash -c "echo $(whoami):110000:65536 > /etc/subuid"
-    $ sudo bash -c "echo $(whoami):110000:65536 > /etc/subgid"
+    $ if [ ! -f /etc/subuid ]; then
+    $   (git clone https://github.com/shadow-maint/shadow && cd shadow && ./autogen.sh --prefix=/usr && make && sudo make -C src install)
+    $   sudo bash -c 'echo 10000 > /proc/sys/user/max_user_namespaces'
+    $   sudo bash -c "echo $(whoami):110000:65536 > /etc/subuid"
+    $   sudo bash -c "echo $(whoami):110000:65536 > /etc/subgid"
+    $ fi
     ```
 
 - Golang 1.12
 
 ## Installation
 
-Refer to the following table for the __minimum__ required software versions
+Refer to the following table for the *minimum* required software versions
 and the installation instructions:
 
 | Component       | Version       | Install Instructions|
 | ----------------|:-------------:|---------------------|
-| Podman          | 1.6.2         | [see here](https://github.com/containers/libpod/blob/master/install.md)
-| `slirp4netns`   | 0.4.0         | [see here](https://github.com/rootless-containers/slirp4netns#quick-start)
-| Kata Containers | 1.10.0-alpha1 | [see here](https://github.com/kata-containers/documentation/blob/master/install/README.md)
-| Host  Kernel    | 4.14          | 
+| Podman          | 1.6.2         | [see here](https://github.com/containers/libpod/blob/master/install.md) |
+| `slirp4netns`   | 0.4.0         | [see here](https://github.com/rootless-containers/slirp4netns#quick-start) |
+| Kata Containers | 1.10.0-alpha1 | [see here](https://github.com/kata-containers/documentation/blob/master/install/README.md) |
+| Host  Kernel    | 4.14          | |
 
-Rootless support for Kata has been verified with `qemu` hypervisor.
-It is recommended to use qemu binary from Kata packages for running rootless containers.
+Rootless support for Kata has been verified with the QEMU hypervisor.
+It is recommended to use the QEMU binary from the Kata packages for running rootless containers.
 
 > **NOTE:**
 >
@@ -84,27 +87,33 @@ $ [ -f /etc/selinux/config ] && sudo sed -i 's/^SELINUX=.*/SELINUX=disabled/g' /
 
 ### Add user to KVM group
 
-To enable rootless support, the user running the workload needs to be added to the `kvm` group.
+- To enable rootless support, the user running the workload needs to be added to the `kvm` group.
 
-```bash
-$ sudo usermod -a -G kvm $USER
-```
-> **NOTE:**
->
-> `kvm` should be the group owning the device node `/dev/kvm` on most distros.
-> Make sure the minimum permissions on `/dev/kvm` are as shown below:
-> ```
-> $ ls -la /dev/kvm
-> crw-rw---- 1 root kvm 10, 232 Nov 11 20:28 /dev/kvm
-> ```
-> If the group owner happens to be `root`, you may need to create a system group `kvm` and
-> change permissions for `/dev/kvm` as shown above.
-> ```
-> $ sudo addgroup --system kvm
-> $ sudo chown root:kvm /dev/kvm
-> $ sudo chmod g+rw /dev/kvm
-> ```
- 
+  ```bash
+  $ getent group kvm &>/dev/null || sudo groupadd --system kvm
+  $ sudo usermod -a -G kvm $USER
+  ```
+  > **NOTE:**
+  >
+  > The `kvm` group owns the `/dev/kvm` device on most distributions.
+
+
+- Make sure the group owner of the `/dev/kvm` device has read and write
+  permissions:
+
+  ```
+  $ ls -la /dev/kvm
+  crw-rw---- 1 root kvm 10, 232 Nov 11 20:28 /dev/kvm
+  ```
+
+  If the group owner for the device is `root`, you may need to create a `kvm` system group and
+  change the permissions on `/dev/kvm`:
+
+  ```bash
+  $ sudo chown root:kvm /dev/kvm
+  $ sudo chmod g+rw /dev/kvm
+  ```
+
 ### Reboot
 
 Reboot the system for the changes to take effect (when you disable SELinux you
@@ -113,17 +122,22 @@ the `kvm` group).
 
 Verify the configuration is correct:
 
-- If installed, disable SELinux:
+- Host kernel minimum version requirement is satisfied
   ```bash
-  $ getenforce
-  Disabled
+  $ host_kernel_version=$(uname -r|cut -d. -f1-2)
+  $ result=$(echo "$host_kernel_version >= 4.14")
+  $ [ "$result" -ne 1 ] && echo "ERROR: host kernel version too old" && exit 1
+  ```
+
+- If installed, ensure SELinux is disabled:
+  ```bash
+  $ [ $(getenforce) != Disabled ] && echo "ERROR: SELinux must be disabled" && exit 1
   ```
 
 - The user should be in the `kvm` group:
 
-  ```
-  $ groups | grep -ow kvm
-  kvm
+  ```bash
+  $ [ -z $(groups | grep -ow kvm) ] && echo "ERROR: user is not a member of the kvm group" && exit 1
   ```
 
 ### Setup Kata configuration files
@@ -169,22 +183,22 @@ Write access on the image should not be required for a read-only access. We have
  in the qemu packages that we ship with Kata and plan on upstreaming this fix.
 (Link to the patch : https://github.com/kata-containers/packaging/blob/master/qemu/patches/4.1.x/0002-memory-backend-file-nvdimm-support-read-only-files-a.patch)
 
-In case you are using a qemu binary provided by your distribution, it is recommended
-that you use an initrd instead of rootfs image file. The reason being, you will need to 
-add write permissions to the rootfs image for the user running the workload, allowing 
-the user to modify the image. 
+In case you are using a QEMU binary provided by your distribution, it is
+recommended that you use an initrd instead of rootfs image file. The reason
+being, you will need to add write permissions to the rootfs image for the user
+running the workload, allowing the user to modify the image. 
 
-If you still wish to to use the rootfs image instead of initrd,
- you can change the group ownership of the image by choosing a trusted group and adding
- `rw` permissions for that group. Choose a group where members of the group trust each 
-other, as giving write access to the group allows any member of the group to
-modify the image.
+If you still wish to to use the rootfs image instead of initrd, you can change
+the group ownership of the image by choosing a trusted group and adding `rw`
+permissions for that group. Choose a group where members of the group trust
+each other, as giving write access to the group allows any member of the group
+to modify the image.
 
 ```bash
-$ # Set $GROUP to a group that is trusted.
+$ TRUSTED_GROUP=kvm
 $ img=$(readlink /usr/share/kata-containers/kata-containers.img)
-$ sudo chown -R root:$GROUP /usr/share/kata-containers/$img
-$ sudo chmod -R g+rw /usr/share/kata-containers/$img
+$ sudo chown -R "root:$TRUSTED_GROUP" "/usr/share/kata-containers/$img"
+$ sudo chmod -R g+rw "/usr/share/kata-containers/$img"
 ```
 > **Warning:**
 >
@@ -213,7 +227,7 @@ You can tell Podman to create or run containers using the Kata runtime with
 You can directly pass the fully qualified Kata runtime path with:
 
 ```bash
-$ podman run --runtime=/usr/bin/kata-runtime ...
+$ podman run --runtime=/usr/bin/kata-runtime alpine date
 ```
 
 or add a `kata` entry in the `[runtimes]` section of the configuration file by
@@ -225,8 +239,8 @@ $ echo 'kata = ["/usr/bin/kata-runtime"]' >> ~/.config/containers/libpod.conf
 
 and then use `kata` as the runtime name:
 
-```bash
-$ podman run --runtime=kata ...
+```
+$ podman run --rm --runtime=kata alpine date
 ```
 
 > **NOTE:**
@@ -235,7 +249,7 @@ $ podman run --runtime=kata ...
 > path in the standard `$PATH` location instead of the configuration file. In
 > this case it looks up a binary with that name automatically:
 >
-> ```bash
+> ```
 > kata-runtime = [
 > ]
 > ```
